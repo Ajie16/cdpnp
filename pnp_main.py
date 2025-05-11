@@ -13,14 +13,16 @@
 import sys, os
 import struct
 from time import sleep
-import asyncio,  qasync
+import asyncio, qasync, _thread
 import math
 import numpy as np
+import cv2 as cv
 from scipy.optimize import fsolve
 from cd_ws import CDWebSocket, CDWebSocketNS
 from web_serve import ws_ns, start_web
 
-from PyQt5.QtCore import QUrl, QTimer
+from PyQt5.QtCore import *
+from PyQt5.QtGui import *
 from PyQt5.QtWidgets import *
 from PyQt5.QtWebEngineWidgets import *
 
@@ -32,11 +34,12 @@ from cdnet.utils.serial_get_port import *
 from cdnet.dev.cdbus_serial import CDBusSerial
 from cdnet.dispatch import *
 
-from pnp_cv import pnp_cv_start, cv_dat, cur_path
+from pnp_cv import pnp_cv_init, cv_dat, cur_path
 from pnp_xyz import *
 
 args = CdArgs()
 dev_str = args.get("--dev", dft=":5740")
+resource_path = os.path.join(cur_path, 'resource')
 
 if args.get("--help", "-h") != None:
     print(__doc__)
@@ -216,16 +219,6 @@ async def open_brower():
     #await proc.communicate()
     logger.info('open brower done.')
 
-
-# def start_loop():
-#     loop = asyncio.new_event_loop()
-#     asyncio.set_event_loop(loop)
-#     loop.create_task(start_web())
-#     loop.create_task(dev_service())
-#     #csa['async_loop'].create_task(open_brower())
-#     logger.info('Please open url: http://localhost:8900')
-#     loop.run_forever()
-
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -237,7 +230,6 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(main_widget)
         main_layout = QHBoxLayout(main_widget)
 
-
         # 左侧主面板
         self.browser = QWebEngineView()
         self.browser.load(QUrl("http://localhost:8900"))
@@ -247,33 +239,57 @@ class MainWindow(QMainWindow):
         settings = self.browser.settings()
         settings.setAttribute(QWebEngineSettings.WebAttribute.FullScreenSupportEnabled, False)
         settings.setAttribute(QWebEngineSettings.WebAttribute.PluginsEnabled, False)
-        # 禁用缩放快捷键
-        # self.browser.page().action(QWebEnginePage.IncreaseZoom).setEnabled(False)
-        # self.browser.page().action(QWebEnginePage.DecreaseZoom).setEnabled(False)
-        # self.browser.page().action(QWebEnginePage.ResetZoom).setEnabled(False)
 
         main_layout.addWidget(self.browser, stretch=3)  # 中间占3份
 
         # 右侧面板
-        right_panel = QWidget()
-        right_panel.setStyleSheet("background-color: #f0f0f0;")
-        right_layout = QVBoxLayout(right_panel)
+        self.right_panel = QWidget()
+        self.right_panel.setStyleSheet("background-color: #f0f0f0;")
+        self.right_layout = QVBoxLayout(self.right_panel)
 
         # 图像显示部分
         image_panel = QWidget()
         image_panel.setStyleSheet("background-color: #ffffff;")
+        image_panel.setFixedSize(600, 800)  # 固定大小为600x800
+        self.image_label = QLabel("Image Loading...")  # 初始化 image_label
+        self.image_label.setAlignment(Qt.AlignCenter)  # 设置文字居中
+
         image_layout = QVBoxLayout(image_panel)
-        image_layout.addWidget(QLabel("图像显示区域"))
-        right_layout.addWidget(image_panel, stretch=2)  # 图像区域占2份
+        image_layout.addWidget(self.image_label)
+
+        self.right_layout.addWidget(image_panel, stretch=2)  # 图像区域占2份
 
         # 控制部分
         control_panel = QWidget()
         control_panel.setStyleSheet("background-color: #e0e0e0;")
-        control_layout = QVBoxLayout(control_panel)
-        control_layout.addWidget(QLabel("控制面板"))
-        right_layout.addWidget(control_panel, stretch=1)  # 控制区域占1份
+        control_label = QLabel("Control Loading...")
+        control_label.setAlignment(Qt.AlignCenter)  # 设置文字居中
 
-        main_layout.addWidget(right_panel, stretch=1)  # 右侧占1份
+        control_layout = QVBoxLayout(control_panel)
+        control_layout.addWidget(control_label)
+
+        self.right_layout.addWidget(control_panel, stretch=1)  # 控制区域占1份
+
+        main_layout.addWidget(self.right_panel, stretch=1)  # 右侧占1份
+
+        # 定时器，用于周期性更新图像
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.update_image)
+        self.timer.start(10)  # 每10毫秒触发一次图片刷新
+
+    def update_image(self):
+        """从队列中获取图像并显示"""
+        if cv_dat['local'] and cv_dat['init'] and not cv_dat['img_queue'].empty():
+            cur_pic = cv_dat['img_queue'].get()
+            cur_pic = cv.cvtColor(cur_pic, cv.COLOR_BGR2RGB)  # 转换颜色空间
+            # 当 dev 为 2 时，逆时针旋转 90 度
+            if cv_dat['dev'] == 2:
+                cur_pic = cv.rotate(cur_pic, cv.ROTATE_90_COUNTERCLOCKWISE)
+            height, width, chanel = cur_pic.shape
+            if height == 800 and width == 600: # 800x600
+                bytes_per_line = 3 * width
+                q_img = QImage(cur_pic.data, width, height, bytes_per_line, QImage.Format_RGB888)
+                self.image_label.setPixmap(QPixmap.fromImage(q_img))
 
 async def pyqt_service():
     window = MainWindow()
@@ -288,27 +304,43 @@ async def pyqt_service():
     while True:
         await asyncio.sleep(1)  # 保持异步事件循环运行
 
-async def main_loop():
-    try:
-        # 启动任务
-        asyncio.create_task(start_web())
-        asyncio.create_task(dev_service())
-        asyncio.create_task(pyqt_service())
-        # asyncio.create_task(pnp_cv_start()) # make cv gui in foreground thread (for macos)
-
-    except Exception as e:
-        logger.error(f"程序异常: {str(e)}")
-        raise
-
-if __name__ == "__main__":
+def main_loop():
     pnp_app = QApplication(sys.argv)
     loop = qasync.QEventLoop(pnp_app)
     asyncio.set_event_loop(loop)
     try:
-        loop.run_until_complete(main_loop())
+        # 启动任务
+        tasks = [
+            loop.create_task(start_web()),
+            loop.create_task(dev_service()),
+            loop.create_task(pyqt_service())
+        ]
+
+        # 监听应用退出事件
+        def on_quit():
+            logger.info("正在关闭应用...")
+            print("正在关闭应用...")
+            for task in tasks:
+                task.cancel()  # 取消所有异步任务
+            loop.stop()  # 停止事件循环
+            _thread.exit()  # 终止所有线程
+
+        pnp_app.aboutToQuit.connect(on_quit)
+
+        loop.run_until_complete(asyncio.gather(*tasks))
         loop.run_forever()
     except Exception as e:
         logger.error(f"程序终止: {str(e)}")
     finally:
         loop.close()
+        _thread.exit()  # 终止所有线程
         sys.exit(1)
+
+if __name__ == "__main__":
+    if dev:
+        _thread.start_new_thread(main_loop, ())
+        pnp_cv_init() # make cv gui in foreground thread (for macos)
+        while True:
+            sleep(5)
+    else:
+        main_loop()

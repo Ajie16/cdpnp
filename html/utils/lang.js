@@ -12,9 +12,9 @@ import { trans_zh_cn }  from './trans/zh_cn.js'
 
 let trans = null;
 if (navigator.language.startsWith('zh')) {
-    trans = trans_zh_hk;
-    if (navigator.language.includes('CN'))
-        trans = trans_zh_cn;
+    trans = trans_zh_cn;
+    if (navigator.language.includes('HK'))
+        trans = trans_zh_hk;
 }
 //if (navigator.language.includes('ja')) // Japanese
 //    trans = trans_ja;

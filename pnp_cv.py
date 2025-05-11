@@ -29,11 +29,13 @@ cv_dat = {
 
     'bg_img': None, # background image
     'bg_capture': False,
-    
+
     'nozzle_thresh': 199,
     'debug': False,
 
-    'sock_pic': None
+    'sock_pic': None,
+
+    'init': False
 }
 
 
@@ -214,7 +216,7 @@ def cv_get_pad(img, detect):
         if bw[center[1], center[0]] != 255:   # skip black
             continue
         # todo: ignore contours too far away
-        
+
         pads.append(center)
 
 
@@ -367,7 +369,7 @@ def pic_rx():
             dat_cnt = 0
 
 
-def pnp_cv_start(detect='default', local=True):
+def pnp_cv_init(detect='default', local=True):
     cv_dat['detect'] = detect
     cv_dat['local'] = local
     cv_dat['img_queue'] = queue.Queue(10)
@@ -376,11 +378,4 @@ def pnp_cv_start(detect='default', local=True):
         print(f'load bg_img from: {cur_path}/tmp/bg_invert.png ...')
         cv_dat['bg_img'] = cv.imread(f'{cur_path}/tmp/bg_invert.png')
     _thread.start_new_thread(pic_rx, ())
-    while True:
-        if cv_dat['local']:
-            cur_pic = cv_dat['img_queue'].get()
-            cv.imshow('image', cur_pic)
-            cv.waitKey(10)
-        else:
-            sleep(0.5)
-
+    cv_dat['init'] = True
