@@ -10,7 +10,7 @@
 
 """
 
-import sys, os
+import sys, os, subprocess
 import struct
 from time import sleep
 import asyncio, qasync, _thread
@@ -40,6 +40,7 @@ from pnp_xyz import *
 args = CdArgs()
 dev_str = args.get("--dev", dft=":5740")
 resource_path = os.path.join(cur_path, 'resource')
+utils_path = os.path.join(cur_path, 'utils')
 
 if args.get("--help", "-h") != None:
     print(__doc__)
@@ -211,85 +212,131 @@ async def dev_service():
         else:
             await sock.sendto('err: dev: unknown cmd', src)
 
-
-async def open_brower():
-    proc = await asyncio.create_subprocess_shell('/opt/google/chrome/chrome --app=http://localhost:8900')
-    await proc.communicate()
-    #proc = await asyncio.create_subprocess_shell('chromium --app=http://localhost:8900')
-    #await proc.communicate()
-    logger.info('open brower done.')
-
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("CDPNP Controller")
-        self.setFixedSize(2560, 1440)  # 固定窗口大小
+        self.setFixedSize(2560, 1440)
+        self.init_ui()
 
-        # 创建主布局
+    def init_ui(self):
+        """初始化UI布局"""
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
         main_layout = QHBoxLayout(main_widget)
 
         # 左侧主面板
+        self.init_browser(main_layout)
+
+        # 右侧面板
+        self.init_right_panel(main_layout)
+
+        # 定时器，用于周期性更新图像
+        self.init_timer()
+
+    def init_browser(self, main_layout):
+        """初始化浏览器部分"""
         self.browser = QWebEngineView()
         self.browser.load(QUrl("http://localhost:8900"))
         self.browser.setZoomFactor(2.0)
 
         # 禁用缩放功能
-        settings = self.browser.settings()
-        settings.setAttribute(QWebEngineSettings.WebAttribute.FullScreenSupportEnabled, False)
-        settings.setAttribute(QWebEngineSettings.WebAttribute.PluginsEnabled, False)
+        # settings = self.browser.settings()
+        # settings.setAttribute(QWebEngineSettings.WebAttribute.FullScreenSupportEnabled, False)
+        # settings.setAttribute(QWebEngineSettings.WebAttribute.PluginsEnabled, False)
 
-        main_layout.addWidget(self.browser, stretch=3)  # 中间占3份
+        main_layout.addWidget(self.browser, stretch=3)
 
-        # 右侧面板
-        self.right_panel = QWidget()
-        self.right_panel.setStyleSheet("background-color: #f0f0f0;")
-        self.right_layout = QVBoxLayout(self.right_panel)
+    def init_right_panel(self, main_layout):
+        """初始化右侧面板"""
+        right_panel = QWidget()
+        right_panel.setStyleSheet("background-color: #f0f0f0;")
+        right_layout = QVBoxLayout(right_panel)
 
         # 图像显示部分
+        self.init_image_panel(right_layout)
+
+        # 控制部分
+        self.init_control_panel(right_layout)
+
+        main_layout.addWidget(right_panel, stretch=1)
+
+    def init_image_panel(self, right_layout):
+        """初始化图像显示部分"""
         image_panel = QWidget()
         image_panel.setStyleSheet("background-color: #ffffff;")
-        image_panel.setFixedSize(600, 800)  # 固定大小为600x800
-        self.image_label = QLabel("Image Loading...")  # 初始化 image_label
-        self.image_label.setAlignment(Qt.AlignCenter)  # 设置文字居中
+        image_panel.setFixedSize(600, 800)
+        self.image_label = QLabel("Image Loading...")
+        self.image_label.setAlignment(Qt.AlignCenter)
 
         image_layout = QVBoxLayout(image_panel)
         image_layout.addWidget(self.image_label)
 
-        self.right_layout.addWidget(image_panel, stretch=2)  # 图像区域占2份
+        right_layout.addWidget(image_panel, stretch=2)
 
-        # 控制部分
+    def init_control_panel(self, right_layout):
+        """初始化控制部分"""
         control_panel = QWidget()
         control_panel.setStyleSheet("background-color: #e0e0e0;")
-        control_label = QLabel("Control Loading...")
-        control_label.setAlignment(Qt.AlignCenter)  # 设置文字居中
-
         control_layout = QVBoxLayout(control_panel)
+
+        # 控制面板标题
+        control_label = QLabel("Control Loading...")
+        control_label.setAlignment(Qt.AlignCenter)
         control_layout.addWidget(control_label)
 
-        self.right_layout.addWidget(control_panel, stretch=1)  # 控制区域占1份
+        # 添加功能按钮
+        self.init_buttons(control_layout)
 
-        main_layout.addWidget(self.right_panel, stretch=1)  # 右侧占1份
+        right_layout.addWidget(control_panel, stretch=1)
 
-        # 定时器，用于周期性更新图像
+    def init_buttons(self, control_layout):
+        """初始化功能按钮"""
+        # 立创坐标转换按钮
+        self.run_script_button = QPushButton("LCEDA坐标转换")
+        self.run_script_button.clicked.connect(self.run_python_script)
+        control_layout.addWidget(self.run_script_button)
+
+        # 急停按钮
+        self.stop_button = QPushButton("STOP")
+        self.stop_button.clicked.connect(self.motor_stop)
+        control_layout.addWidget(self.stop_button)
+
+    def init_timer(self):
+        """初始化定时器"""
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_image)
-        self.timer.start(10)  # 每10毫秒触发一次图片刷新
+        self.timer.start(10)
 
     def update_image(self):
         """从队列中获取图像并显示"""
         if cv_dat['local'] and cv_dat['init'] and not cv_dat['img_queue'].empty():
             cur_pic = cv_dat['img_queue'].get()
-            cur_pic = cv.cvtColor(cur_pic, cv.COLOR_BGR2RGB)  # 转换颜色空间
-            # 当 dev 为 2 时，逆时针旋转 90 度
+            cur_pic = cv.cvtColor(cur_pic, cv.COLOR_BGR2RGB)
             if cv_dat['dev'] == 2:
                 cur_pic = cv.rotate(cur_pic, cv.ROTATE_90_COUNTERCLOCKWISE)
             height, width, chanel = cur_pic.shape
-            if height == 800 and width == 600: # 800x600
+            if height == 800 and width == 600:
                 bytes_per_line = 3 * width
                 q_img = QImage(cur_pic.data, width, height, bytes_per_line, QImage.Format_RGB888)
-                self.image_label.setPixmap(QPixmap.fromImage(q_img))
+                pixmap = QPixmap.fromImage(q_img)
+                self.image_label.setPixmap(pixmap.scaled(self.image_label.size(), Qt.KeepAspectRatio))
+
+    def run_python_script(self):
+        """执行 Python 脚本"""
+        try:
+            file_path, _ = QFileDialog.getOpenFileName(None, "选择CSV文件", "", "CSV文件 (*.csv)")
+            if file_path:
+                script_path = os.path.join(utils_path, 'parse_csv_lceda.py')
+                subprocess.run(['python3', script_path, file_path], check=True)
+                logger.info("Python 脚本执行成功")
+            else:
+                logger.info("未选择CSV文件")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Python 脚本执行失败: {e}")
+
+    def motor_stop(self):
+        print("stop")
 
 async def pyqt_service():
     window = MainWindow()
@@ -306,6 +353,10 @@ async def pyqt_service():
 
 def main_loop():
     pnp_app = QApplication(sys.argv)
+    # 设置应用程序图标
+    icon_path = os.path.join(resource_path, 'pnp_icon.svg')  # 图标文件路径
+    if os.path.exists(icon_path):
+        pnp_app.setWindowIcon(QIcon(icon_path))
     loop = qasync.QEventLoop(pnp_app)
     asyncio.set_event_loop(loop)
     try:
@@ -326,7 +377,6 @@ def main_loop():
             _thread.exit()  # 终止所有线程
 
         pnp_app.aboutToQuit.connect(on_quit)
-
         loop.run_until_complete(asyncio.gather(*tasks))
         loop.run_forever()
     except Exception as e:
@@ -337,6 +387,7 @@ def main_loop():
         sys.exit(1)
 
 if __name__ == "__main__":
+
     if dev:
         _thread.start_new_thread(main_loop, ())
         pnp_cv_init() # make cv gui in foreground thread (for macos)
